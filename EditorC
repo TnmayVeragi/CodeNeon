@@ -1,0 +1,733 @@
+import sys, io, subprocess, os
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QPlainTextEdit, QTextEdit, QVBoxLayout, QHBoxLayout,
+    QListWidget, QWidget, QLabel, QMenuBar, QPushButton, QFrame, QComboBox,
+    QFileDialog, QMessageBox
+)
+from PyQt6.QtGui import (
+    QFont, QColor, QTextCharFormat, QSyntaxHighlighter, QTextCursor,
+    QPalette, QBrush, QLinearGradient, QPainter, QPolygon, QPen
+)
+from PyQt6.QtCore import Qt, QRegularExpression, QPointF
+
+class PythonHighlighter(QSyntaxHighlighter):
+    def __init__(self, doc):
+        super().__init__(doc)
+        kw_fmt = QTextCharFormat()
+        kw_fmt.setForeground(QColor("#39FF14"))
+        kw_fmt.setFontWeight(QFont.Weight.Bold)
+        kws = ("def","class","if","else","elif","while","for","try","except","with","as",
+              "import","from","return","print","in","and","or","not","is","None","True","False")
+        self.rules = [(QRegularExpression(rf'\b{w}\b'), kw_fmt) for w in kws]
+        
+        str_fmt = QTextCharFormat()
+        str_fmt.setForeground(QColor("#00FFFF"))
+        self.rules += [
+            (QRegularExpression(r'"[^"\\]*(\\.[^"\\]*)*"'), str_fmt),
+            (QRegularExpression(r"'[^'\\]*(\\.[^'\\]*)*'"), str_fmt)
+        ]
+        
+        c_fmt = QTextCharFormat()
+        c_fmt.setForeground(QColor("#FF69B4"))
+        self.rules.append((QRegularExpression(r'#.*'), c_fmt))
+        
+        n_fmt = QTextCharFormat()
+        n_fmt.setForeground(QColor("#FFA500"))
+        self.rules.append((QRegularExpression(r'\b[0-9]+(\.[0-9]+)?\b'), n_fmt))
+    
+    def highlightBlock(self, text):
+        for pattern, fmt in self.rules:
+            it = pattern.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                self.setFormat(m.capturedStart(), m.capturedLength(), fmt)
+
+class JavaHighlighter(QSyntaxHighlighter):
+    def __init__(self, doc):
+        super().__init__(doc)
+        kw_fmt = QTextCharFormat()
+        kw_fmt.setForeground(QColor("#FFD700"))
+        kw_fmt.setFontWeight(QFont.Weight.Bold)
+        kws = (
+            "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class",
+            "const", "continue", "default", "do", "double", "else", "enum", "extends", "final",
+            "finally", "float", "for", "goto", "if", "implements", "import", "instanceof",
+            "int", "interface", "long", "native", "new", "package", "private", "protected",
+            "public", "return", "short", "static", "strictfp", "super", "switch", "synchronized",
+            "this", "throw", "throws", "transient", "try", "void", "volatile", "while", "true", "false", "null"
+        )
+        self.rules = [(QRegularExpression(rf'\b{w}\b'), kw_fmt) for w in kws]
+        
+        str_fmt = QTextCharFormat()
+        str_fmt.setForeground(QColor("#00FFFF"))
+        self.rules += [
+            (QRegularExpression(r'"[^"\\]*(\\.[^"\\]*)*"'), str_fmt),
+            (QRegularExpression(r"'[^'\\]*(\\.[^'\\]*)*'"), str_fmt)
+        ]
+        
+        c_fmt = QTextCharFormat()
+        c_fmt.setForeground(QColor("#FF69B4"))
+        self.rules.append((QRegularExpression(r'//.*'), c_fmt))
+        
+        self.multiLineCommentFormat = QTextCharFormat()
+        self.multiLineCommentFormat.setForeground(QColor("#FF69B4"))
+        self.commentStartExpression = QRegularExpression(r'/\*')
+        self.commentEndExpression = QRegularExpression(r'\*/')
+
+        n_fmt = QTextCharFormat()
+        n_fmt.setForeground(QColor("#FFA500"))
+        self.rules.append((QRegularExpression(r'\b[0-9]+(\.[0-9]+)?\b'), n_fmt))
+    
+    def highlightBlock(self, text):
+        for pattern, fmt in self.rules:
+            it = pattern.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                self.setFormat(m.capturedStart(), m.capturedLength(), fmt)
+        
+        self.setCurrentBlockState(0)
+        startIndex = 0
+        if self.previousBlockState() != 1:
+            startIndex = text.find("/*")
+        
+        while startIndex >= 0:
+            endIndex = text.find("*/", startIndex)
+            if endIndex == -1:
+                self.setCurrentBlockState(1)
+                commentLength = len(text) - startIndex
+            else:
+                commentLength = endIndex - startIndex + 2
+            self.setFormat(startIndex, commentLength, self.multiLineCommentFormat)
+            startIndex = text.find("/*", startIndex + commentLength)
+
+class HTMLHighlighter(QSyntaxHighlighter):
+    def __init__(self, doc):
+        super().__init__(doc)
+        tag_fmt = QTextCharFormat()
+        tag_fmt.setForeground(QColor("#FF6347"))
+        tag_fmt.setFontWeight(QFont.Weight.Bold)
+        self.rules = [(QRegularExpression(r'<\/?[a-zA-Z][^>]*>'), tag_fmt)]
+        
+        attr_fmt = QTextCharFormat()
+        attr_fmt.setForeground(QColor("#FFD700"))
+        self.rules.append((QRegularExpression(r'\b[a-zA-Z-]+(?=\=)'), attr_fmt))
+        
+        attr_value_fmt = QTextCharFormat()
+        attr_value_fmt.setForeground(QColor("#00FFFF"))
+        self.rules.append((QRegularExpression(r'"[^"]*"'), attr_value_fmt))
+        self.rules.append((QRegularExpression(r"'[^']*'"), attr_value_fmt))
+        
+        comment_fmt = QTextCharFormat()
+        comment_fmt.setForeground(QColor("#FF69B4"))
+        self.rules.append((QRegularExpression(r'<!--.*-->'), comment_fmt))
+        
+        doctype_fmt = QTextCharFormat()
+        doctype_fmt.setForeground(QColor("#9370DB"))
+        doctype_fmt.setFontWeight(QFont.Weight.Bold)
+        self.rules.append((QRegularExpression(r'<!DOCTYPE[^>]*>'), doctype_fmt))
+        
+        special_fmt = QTextCharFormat()
+        special_fmt.setForeground(QColor("#FFA500"))
+        self.rules.append((QRegularExpression(r'&[a-zA-Z]+;'), special_fmt))
+    
+    def highlightBlock(self, text):
+        for pattern, fmt in self.rules:
+            it = pattern.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                self.setFormat(m.capturedStart(), m.capturedLength(), fmt)
+
+class JavaScriptHighlighter(QSyntaxHighlighter):
+    def __init__(self, doc):
+        super().__init__(doc)
+        kw_fmt = QTextCharFormat()
+        kw_fmt.setForeground(QColor("#FFD700"))
+        kw_fmt.setFontWeight(QFont.Weight.Bold)
+        kws = (
+            "break", "case", "catch", "class", "const", "continue", "debugger", "default",
+            "delete", "do", "else", "export", "extends", "finally", "for", "function",
+            "if", "import", "in", "instanceof", "new", "return", "super", "switch",
+            "this", "throw", "try", "typeof", "var", "void", "while", "with", "yield",
+            "let", "await", "async", "static", "true", "false", "null", "undefined"
+        )
+        self.rules = [(QRegularExpression(rf'\b{w}\b'), kw_fmt) for w in kws]
+        
+        str_fmt = QTextCharFormat()
+        str_fmt.setForeground(QColor("#00FFFF"))
+        self.rules += [
+            (QRegularExpression(r'"[^"\\]*(\\.[^"\\]*)*"'), str_fmt),
+            (QRegularExpression(r"'[^'\\]*(\\.[^'\\]*)*'"), str_fmt),
+            (QRegularExpression(r'`[^`\\]*(\\.[^`\\]*)*`'), str_fmt)
+        ]
+        
+        c_fmt = QTextCharFormat()
+        c_fmt.setForeground(QColor("#FF69B4"))
+        self.rules.append((QRegularExpression(r'//.*'), c_fmt))
+        
+        self.multiLineCommentFormat = QTextCharFormat()
+        self.multiLineCommentFormat.setForeground(QColor("#FF69B4"))
+        self.commentStartExpression = QRegularExpression(r'/\*')
+        self.commentEndExpression = QRegularExpression(r'\*/')
+
+        n_fmt = QTextCharFormat()
+        n_fmt.setForeground(QColor("#FFA500"))
+        self.rules.append((QRegularExpression(r'\b[0-9]+(\.[0-9]+)?\b'), n_fmt))
+        
+        template_fmt = QTextCharFormat()
+        template_fmt.setForeground(QColor("#9370DB"))
+        self.rules.append((QRegularExpression(r'\$\{[^}]*\}'), template_fmt))
+    
+    def highlightBlock(self, text):
+        for pattern, fmt in self.rules:
+            it = pattern.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                self.setFormat(m.capturedStart(), m.capturedLength(), fmt)
+        
+        self.setCurrentBlockState(0)
+        startIndex = 0
+        if self.previousBlockState() != 1:
+            startIndex = text.find("/*")
+        
+        while startIndex >= 0:
+            endIndex = text.find("*/", startIndex)
+            if endIndex == -1:
+                self.setCurrentBlockState(1)
+                commentLength = len(text) - startIndex
+            else:
+                commentLength = endIndex - startIndex + 2
+            self.setFormat(startIndex, commentLength, self.multiLineCommentFormat)
+            startIndex = text.find("/*", startIndex + commentLength)
+
+class SmartEditor(QPlainTextEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background:#2E2E2E;color:#39FF14;font-size:14px;border:none;padding:8px;")
+        self.setFont(QFont("Consolas", 12))
+        self.highlighter = None
+        self.set_highlighter("Python")
+    
+    def set_highlighter(self, lang):
+        if self.highlighter:
+            self.highlighter.setDocument(None)
+        
+        if lang == "Python":
+            self.highlighter = PythonHighlighter(self.document())
+        elif lang == "Java":
+            self.highlighter = JavaHighlighter(self.document())
+        elif lang == "HTML":
+            self.highlighter = HTMLHighlighter(self.document())
+        elif lang == "JavaScript":
+            self.highlighter = JavaScriptHighlighter(self.document())
+    
+    def keyPressEvent(self, e):
+        cursor = self.textCursor()
+        txt = e.text()
+        
+        # Get language from main window
+        main_window = self.window()
+        if hasattr(main_window, 'language_selector'):
+            lang = main_window.language_selector.currentText()
+        else:
+            lang = "Python"
+
+        if lang == "HTML":
+            if txt == '<':
+                cursor.insertText('<>')
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
+                self.setTextCursor(cursor)
+                return
+        elif lang == "JavaScript":
+            if txt == '{':
+                cursor.insertText('{}')
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
+                self.setTextCursor(cursor)
+                return
+            elif txt == '(':
+                cursor.insertText('()')
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
+                self.setTextCursor(cursor)
+                return
+            elif txt == '[':
+                cursor.insertText('[]')
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
+                self.setTextCursor(cursor)
+                return
+            elif txt == '"':
+                cursor.insertText('""')
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
+                self.setTextCursor(cursor)
+                return
+            elif txt == "'":
+                cursor.insertText("''")
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
+                self.setTextCursor(cursor)
+                return
+            elif txt == "`":
+                cursor.insertText("``")
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
+                self.setTextCursor(cursor)
+                return
+        else:
+            pairs = {'(':')', '{':'}', '[':']', '"':'"', "'":"'"}
+            if txt in pairs:
+                cursor.insertText(txt + pairs[txt])
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
+                self.setTextCursor(cursor)
+                return
+        
+        if txt in ('\r', '\n'):
+            line = cursor.block().text()
+            indent = len(line) - len(line.lstrip(' '))
+            if (lang == "Python" and line.rstrip().endswith(":")) or \
+               (lang == "JavaScript" and line.rstrip().endswith("{")): 
+                indent += 4
+            super().keyPressEvent(e)
+            self.textCursor().insertText(" " * indent)
+            return
+            
+        if e.key() == Qt.Key.Key_Tab:
+            cursor.insertText("    " if lang != "HTML" else "  ")
+            return
+            
+        super().keyPressEvent(e)
+
+class TriangleButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(24, 24)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Run Code")
+        self.setStyleSheet("background:transparent;border:none;")
+    
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        side = 14
+        cx, cy = w/2, h/2
+        tip_x = cx + side/2 - 3
+        p1 = QPointF(cx - side/2, cy - (3**0.5)/2 * side/2)
+        p2 = QPointF(cx - side/2, cy + (3**0.5)/2 * side/2)
+        p3 = QPointF(tip_x, cy)
+        tri = QPolygon([p1.toPoint(), p2.toPoint(), p3.toPoint()])
+        pen = QPen(QColor("#00FFAA"))
+        pen.setWidthF(1.3)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPolygon(tri)
+
+class IDEWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("💡 Neon IDE (Python/Java/HTML/JavaScript)")
+        self.setGeometry(100, 100, 1080, 720)
+        self.current_file = None
+        self.init_ui()
+        self.set_gradient_bg()
+    
+    def set_gradient_bg(self):
+        grad = QLinearGradient(0, 0, 0, self.height())
+        grad.setColorAt(0, QColor("#8A2BE2"))
+        grad.setColorAt(0.5, QColor("#00FFFF"))
+        grad.setColorAt(1, QColor("#1E90FF"))
+        pal = self.palette()
+        pal.setBrush(QPalette.ColorRole.Window, QBrush(grad))
+        self.setPalette(pal)
+        self.setAutoFillBackground(True)
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Menu Bar
+        menu_bar_container = QWidget()
+        menu_bar_container.setStyleSheet("background:#1E1E1E;")
+        menu_bar_layout = QHBoxLayout(menu_bar_container)
+        menu_bar_layout.setContentsMargins(8, 2, 8, 2)
+        
+        self.menubar = QMenuBar()
+        self.menubar.setStyleSheet("""
+            QMenuBar {
+                background:#1E1E1E;
+                color:white;
+                font-weight:bold;
+            }
+            QMenuBar::item {
+                background:transparent;
+                padding:4px 12px;
+                margin:0 4px;
+                border-radius:4px;
+            }
+            QMenuBar::item:selected {
+                background:#333;
+                color:white;
+            }
+            QMenuBar::item:pressed {
+                background:#555;
+            }
+            QMenu {
+                background:#2E2E2E;
+                color:white;
+                border:1px solid #444;
+                padding:4px 0;
+            }
+            QMenu::item {
+                padding:6px 24px;
+            }
+            QMenu::item:selected {
+                background:#003300;
+                color:white;
+            }
+        """)
+        
+        file_menu = self.menubar.addMenu("File")
+        file_menu.addAction("New File").triggered.connect(self.new_file)
+        file_menu.addAction("Open").triggered.connect(self.open_file)
+        file_menu.addAction("Save").triggered.connect(self.save_file)
+        file_menu.addAction("Exit").triggered.connect(self.close)
+        
+        # Language Selector
+        self.language_selector = QComboBox()
+        self.language_selector.setFixedWidth(150)
+        self.language_selector.setStyleSheet("""
+            QComboBox {
+                background:#2E2E2E;
+                color:white;
+                font-weight:bold;
+                border-radius:5px;
+                padding:3px 10px;
+                font-family:Consolas, monospace;
+            }
+            QComboBox QAbstractItemView {
+                background:#1E1E1E;
+                selection-background-color:#005f5f;
+                color:white;
+            }
+        """)
+        self.language_selector.addItems(["Python", "Java", "HTML", "JavaScript"])
+        
+        # Run Button
+        run_btn = TriangleButton()
+        run_btn.clicked.connect(self.run_code)
+        
+        # Language label - modified to be white
+        language_label = QLabel("Language: ")
+        language_label.setStyleSheet("color:white; font-weight:bold;")
+        
+        menu_bar_layout.addWidget(self.menubar)
+        menu_bar_layout.addStretch()
+        menu_bar_layout.addWidget(language_label)  # Changed to use the styled label
+        menu_bar_layout.addWidget(self.language_selector)
+        menu_bar_layout.addSpacing(10)
+        menu_bar_layout.addWidget(run_btn)
+        
+        # Main Content
+        body = QWidget()
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        
+        # Left Panel
+        left_panel = QListWidget()
+        left_panel.addItems(["Main.py", "Main.java", "index.html", "script.js", "README.md"])
+        left_panel.setFixedWidth(220)
+        left_panel.setStyleSheet("""
+            QListWidget {
+                background:#1E1E1E;
+                border:none;
+                padding-top:12px;
+                padding-left:12px;
+                font-family:'Consolas', monospace;
+                font-size:15px;
+                font-weight:700;
+                color:#EEE;
+            }
+            QListWidget::item {
+                padding:10px 16px;
+                margin:4px 8px;
+                border-radius:6px;
+                color:#EEE;
+                border:none;
+            }
+            QListWidget::item:hover {
+                color:#FFF;
+                background:#3A3D41;
+            }
+            QListWidget::item:selected {
+                color:white;
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #006bb3,stop:1 #0099ff);
+                font-weight:700;
+                border-radius:6px;
+                border:1px solid #3399ff;
+            }
+            QListWidget::item:selected:focus {
+                outline:none;
+                border:1px solid #66ccff;
+                box-shadow:0 0 8px #66ccff;
+            }
+        """)
+        
+        # Editor
+        self.editor = SmartEditor(self)
+        self.language_selector.currentTextChanged.connect(self.editor.set_highlighter)
+        
+        # Terminal
+        self.terminal_output = QTextEdit()
+        self.terminal_output.setReadOnly(True)
+        self.terminal_output.setFixedHeight(130)
+        self.terminal_output.setStyleSheet("""
+            background:#1E1E1E;
+            color:#39FF14;
+            font-family:Consolas, monospace;
+            font-size:13px;
+            border:none;
+            padding:8px;
+        """)
+        self.terminal_output.hide()
+        
+        editor_layout = QVBoxLayout()
+        editor_layout.addWidget(self.editor)
+        editor_layout.addWidget(self.terminal_output)
+        
+        body_layout.addWidget(left_panel)
+        body_layout.addWidget(QFrame(frameShape=QFrame.Shape.VLine, frameShadow=QFrame.Shadow.Sunken, 
+                                  styleSheet="color:#444;background:#444;width:1px;"))
+        body_layout.addLayout(editor_layout)
+        
+        layout.addWidget(menu_bar_container)
+        layout.addWidget(QFrame(frameShape=QFrame.Shape.HLine, frameShadow=QFrame.Shadow.Sunken,
+                            styleSheet="color:#444;background:#444;height:1px;"))
+        layout.addWidget(body)
+        
+        central_widget = QWidget()
+        central_widget.setLayout(layout)
+        self.setCentralWidget(central_widget)
+    
+    def run_code(self):
+        code = self.editor.toPlainText()
+        lang = self.language_selector.currentText()
+        self.terminal_output.show()
+        self.terminal_output.clear()
+        
+        if lang == "Python":
+            try:
+                old_stdout = sys.stdout
+                old_stderr = sys.stderr
+                sys.stdout = io.StringIO()
+                sys.stderr = io.StringIO()
+                exec(code, {})
+                output = sys.stdout.getvalue() + sys.stderr.getvalue()
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                self.terminal_output.setPlainText(output if output else "Execution finished with no output.")
+            except Exception as e:
+                self.terminal_output.setPlainText(f"Error during execution:\n{e}")
+        
+        elif lang == "Java":
+            temp_dir = os.path.join(os.getcwd(), "temp_java")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            import re
+            match = re.search(r'public\s+class\s+(\w+)', code)
+            if not match:
+                self.terminal_output.setPlainText("Java code must contain a public class.")
+                return
+            
+            class_name = match.group(1)
+            java_file_path = os.path.join(temp_dir, f"{class_name}.java")
+            
+            try:
+                with open(java_file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                
+                compile_proc = subprocess.run(["javac", java_file_path], capture_output=True, text=True)
+                if compile_proc.returncode != 0:
+                    self.terminal_output.setPlainText("Compilation errors:\n" + compile_proc.stderr)
+                    return
+                
+                run_proc = subprocess.run(["java", "-cp", temp_dir, class_name], capture_output=True, text=True)
+                self.terminal_output.setPlainText(
+                    run_proc.stdout if run_proc.stdout else "Program finished with no output.\n" + 
+                    (run_proc.stderr if run_proc.stderr else "")
+                )
+            except Exception as e:
+                self.terminal_output.setPlainText(f"Error: {e}")
+        
+        elif lang == "HTML":
+            try:
+                with open("temp.html", "w", encoding="utf-8") as f:
+                    f.write(code)
+                
+                if sys.platform == "win32":
+                    os.startfile("temp.html")
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", "temp.html"])
+                else:
+                    subprocess.run(["xdg-open", "temp.html"])
+                
+                self.terminal_output.setPlainText("HTML file opened in default browser.")
+            except Exception as e:
+                self.terminal_output.setPlainText(f"Error opening HTML in browser:\n{e}")
+        
+        elif lang == "JavaScript":
+            try:
+                # First try to run with Node.js if available
+                try:
+                    node_proc = subprocess.run(["node", "-e", code], capture_output=True, text=True)
+                    output = node_proc.stdout
+                    if node_proc.stderr:
+                        output += "\nErrors:\n" + node_proc.stderr
+                    self.terminal_output.setPlainText(output if output else "JavaScript executed (via Node.js)")
+                    return
+                except FileNotFoundError:
+                    pass  # Fall back to browser execution
+                
+                # Fall back to browser execution if Node.js not available
+                temp_html = f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>JavaScript Execution</title>
+                    <script>
+                        console.log = function(message) {{
+                            document.getElementById('output').innerHTML += message + '\\n';
+                        }};
+                        console.error = function(message) {{
+                            document.getElementById('output').innerHTML += 'ERROR: ' + message + '\\n';
+                        }};
+                        try {{
+                            {code}
+                        }} catch(e) {{
+                            console.error(e.toString());
+                        }}
+                    </script>
+                </head>
+                <body>
+                    <pre id="output" style="color:white;background:#1E1E1E;padding:10px;"></pre>
+                </body>
+                </html>
+                """
+                
+                temp_file = "temp_js.html"
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    f.write(temp_html)
+                
+                if sys.platform == "win32":
+                    os.startfile(temp_file)
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", temp_file])
+                else:
+                    subprocess.run(["xdg-open", temp_file])
+                
+                self.terminal_output.setPlainText("JavaScript executed in browser (Node.js not found)")
+            except Exception as e:
+                self.terminal_output.setPlainText(f"Error executing JavaScript:\n{e}")
+    
+    def new_file(self):
+        if self.maybe_save():
+            self.editor.clear()
+            self.current_file = None
+            self.setWindowTitle("💡 Neon IDE (Python/Java/HTML/JavaScript) - Untitled")
+    
+    def open_file(self):
+        if not self.maybe_save():
+            return
+        
+        lang = self.language_selector.currentText()
+        if lang == "Python":
+            filter_str = "Python Files (*.py);;All Files (*)"
+        elif lang == "Java":
+            filter_str = "Java Files (*.java);;All Files (*)"
+        elif lang == "HTML":
+            filter_str = "HTML Files (*.html *.htm);;All Files (*)"
+        elif lang == "JavaScript":
+            filter_str = "JavaScript Files (*.js);;All Files (*)"
+        else:
+            filter_str = "All Files (*)"
+        
+        path, _ = QFileDialog.getOpenFileName(self, "Open File", "", filter_str)
+        if path:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    self.editor.setPlainText(f.read())
+                self.current_file = path
+                self.setWindowTitle(f"💡 Neon IDE (Python/Java/HTML/JavaScript) - {path}")
+                
+                if path.endswith(('.html', '.htm')):
+                    self.language_selector.setCurrentText("HTML")
+                elif path.endswith('.py'):
+                    self.language_selector.setCurrentText("Python")
+                elif path.endswith('.java'):
+                    self.language_selector.setCurrentText("Java")
+                elif path.endswith('.js'):
+                    self.language_selector.setCurrentText("JavaScript")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not open file:\n{e}")
+    
+    def save_file(self):
+        if self.current_file:
+            try:
+                with open(self.current_file, 'w', encoding='utf-8') as f:
+                    f.write(self.editor.toPlainText())
+                self.setWindowTitle(f"💡 Neon IDE (Python/Java/HTML/JavaScript) - {self.current_file}")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not save file:\n{e}")
+        else:
+            self.save_file_as()
+    
+    def save_file_as(self):
+        lang = self.language_selector.currentText()
+        if lang == "Python":
+            filter_str = "Python Files (*.py);;All Files (*)"
+            ext = ".py"
+        elif lang == "Java":
+            filter_str = "Java Files (*.java);;All Files (*)"
+            ext = ".java"
+        elif lang == "HTML":
+            filter_str = "HTML Files (*.html *.htm);;All Files (*)"
+            ext = ".html"
+        elif lang == "JavaScript":
+            filter_str = "JavaScript Files (*.js);;All Files (*)"
+            ext = ".js"
+        else:
+            filter_str = "All Files (*)"
+            ext = ""
+        
+        path, _ = QFileDialog.getSaveFileName(self, "Save File As", "", filter_str)
+        if path:
+            if not path.endswith(ext):
+                path += ext
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(self.editor.toPlainText())
+                self.current_file = path
+                self.setWindowTitle(f"💡 Neon IDE (Python/Java/HTML/JavaScript) - {path}")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not save file:\n{e}")
+    
+    def maybe_save(self):
+        if not self.editor.document().isModified():
+            return True
+        
+        ret = QMessageBox.warning(
+            self, "Unsaved Changes", "You have unsaved changes. Save now?",
+            QMessageBox.StandardButton.Save | 
+            QMessageBox.StandardButton.Discard | 
+            QMessageBox.StandardButton.Cancel
+        )
+        
+        if ret == QMessageBox.StandardButton.Save:
+            self.save_file()
+            return True
+        elif ret == QMessageBox.StandardButton.Cancel:
+            return False
+        return True
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = IDEWindow()
+    window.show()
+    sys.exit(app.exec())
